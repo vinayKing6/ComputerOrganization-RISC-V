@@ -293,16 +293,184 @@ sd x9, 240(x10) //将最终结果存储到A[30]
 |            Shift Left (左移)            |     <<     |      <<       |  sll, slli  |
 |           Shift Right (右移)            |     >>     |      >>>      |  srl, srli  |
 | Shift Right arithmetic (可以计算符号数) |     >>     |      >>       |  sra, srai  |
-|             Bit-by-bit AND              |     &      |       &       |  and, andi  |
-|              Bit-by-bit OR              |     \|     |      \|       |   or, ori   |
-|             Bit-by-bit XOR              |     ^      |       ^       |  xor, xori  |
-|             Bit-by-bit NOT              |     ~      |       ~       |    xori     |
+|           Bit-by-bit AND (与)           |     &      |       &       |  and, andi  |
+|           Bit-by-bit OR (或)            |     \|     |      \|       |   or, ori   |
+|   Bit-by-bit XOR (exclusive or 异或)    |     ^      |       ^       |  xor, xori  |
+|           Bit-by-bit NOT (非)           |     ~      |       ~       |    xori     |
 
+## Shift
 
+Shift 分为*Shift Left*和*Shift Right*，左移(Shift Left)相当于将原先的bits往左移动n个bits，右边空出来的bits用0填充，相当于乘$2^n$；右移则相反，srli (shift right logical immediate) 将左边空出来的bits用0填充，srai (*shift right arighmetic immediate*)将左边空出来的bits用sign bit填充。指令例如：
+
+```apl
+slli x11, x19, 4 // x11 = x19 << 4 bits
+```
+
+Shift left logical immediate (slli) ，使用 I-type 格式，由于bit移动超过63bits对于64bits的寄存器来说是毫无意义的，所以*slli*只使用immediate的最低的6bits ($2^6-1=63$)。剩下的6bits以额外的opcode字段使用：
+
+| funct6 | immediate | rs1  | funct3 |  rd  | opcode |
+| :----: | :-------: | :--: | :----: | :--: | :----: |
+|   0    |     4     |  19  |   1    |  11  |   19   |
+
+## AND
+
+与操作，将两个数按位操作，同为1则1，否则为0
+
+## OR
+
+或操作，同样按位操作，如果有1则为1，否则为0
+
+## XOR
+
+异或操作，同样按位操作，如果两个位不同则为1，否则为0
+
+## NOT
+
+非操作，只有一个操作数，将0变成1，1变成0
+
+# 2.7 条件指令 (Instructions for Making Decisions)
+
+RISC-V包括两个decision-making指令：
+
+```apl
+beq rs1, rs2, L1
+```
+
+**branch if equal**，这条指令的意思是，如果rs1等于rs2，就跳转到标记为L1的声明。
+
+```apl
+bne rs1, rs2, L1
+```
+
+**branch if not equal** ，与上面的指令相反。
+
+## Conditional branch
+
+一条指令能够测试数值，并且允许通过测试的结果来把控制权转移到程序的新的地址。
+
+例如：
+
+```apl
+if (i==j)
+	f=g+h;
+else
+	f=g-h;
+```
+
+假设变量 *f g h i j* 存储在 *x19 ~ x23* 中，以上代码的汇编是：
+
+```apl
+bne x22, x23, Else // go to Else if i != j
+add x19, x20, x21 // f=g+H
+beq x0, x0, Exit // 退出，条件永久成立 if 0==0 exit
+Else: sub x19, x20, x21 // f=g-h (如果i!=j)
+Exit:
+```
+
+## Loops
+
+### 编译C中典型的loop：
+
+```apl
+while (save[i]==k)
+    i+=1;
+```
+
+假设 *i k* 存储于 *x22 x24* ，数组 *save* 的 *base address* 存储于 *x25*。
+
+首先需要将save[i]从内存中读取到临时寄存器中，在此之前，需要计算save[i]在内存中的地址，由于每一块地址是一个字节(byte) ，因此一个64bits的doubleword需要8个字节，因此计算地址时，i需要乘8，可以通过左移3实现。然后需要标记为loop的指令，这样可以实现循环。
+
+```apl
+Loop: slli x10, x22, 3 // temp reg x10=i<<3 (临时寄存器x10=i*8)
+add x10, x10, x25 // x10=address of save[i] , 相当于i*8(x25)
+ld x9, 0(x10) // temp reg x9=save[i]
+bne x9, x24, Exit // if save[i] != k exit
+addi x22, x22, 1 // i+=1
+beq x0, x0, Loop // if x0==x0 Loop
+Exit:
+```
+
+## 其他条件指令
+
+除了对比相等性(bne,beq)以外，RISC-V还提供了其他用于对比两个操作数的指令，例如 *less than ($<$) ，less than or equal ($\leq$)， greater than ($>$) ，greater than or equal ($\geq$)* 。
+
+RISC-V提供了不同的指令用于对比符号数和无符号数。*blt* (branch if less than) 当$rs1<rs2$时跳转，*bge* (branch if greater or equal) 当$rs1\geq{rs2}$ 时跳转。等等，这些指令都用于对比二的补码的数值，即符号数。
+
+*bltu* (branch if less than unsigned) ，*bgeu* (branch if greater than or equal , unsigned) 用于对比无符号数。
+
+## 检查边界溢出的简便方法
+
+当检查$0\leq{x}<y$时 (例如数组的下标)，如果把x当作无符号数看待，那么如果x的最高位是1，则在符号数中x<0，在无符号数中x>y (y的最高位一定是0,内存从0开始);如果x>y则无论是不是以符号数都是边界溢出，所以只需要以下一条指令：
+
+```apl
+bgeu x20, x11, IndexOutOfBounds // if x20>=x11 or x20<0, goto IndexOutOfBounds
+```
 
 # 2.8 Procedures
 
-![](img/riscv_reg.png)
+一个*Procedure* 或者函数(*Function*)是用来更好地组织程序的工具，让程序更加容易理解和复用。
+
+## Procedure (Function)
+
+一种被存储的子程序，基于给定的参数执行特殊的任务。
+
+执行一个Procedure需要执行以下几个步骤：
+
+1. 父程序(Calling program)将参数放置在Procedure可以获取的地方
+2. 将控制转移到Procedure
+3. 获取Procedure需要的存储资源
+4. 执行任务
+5. 将结果放在主程序可以获取的地方
+6. 将控制权转移至父程序
+
+RISC-V约定以下寄存器用于Procedure：
+
+- *x10-x17*：8个寄存器用于传递参数或者返回结果
+- *x1*：一个返回地址寄存器，用于回到原点(调用Procedure的地方)
+
+除了分配这些寄存器，RISC-V包含一个专门给Procedure的指令：在跳转到一个地址的同时将之后接下来要执行的指令地址存储到x1(即调用完Procedure后要执行的指令的地址)-----> ***jump-and-link instruction*** (**jal**)，例如：
+
+```apl
+jal x1, ProcedureAddress // jump to ProcedureAddress and write return address to x1
+```
+
+## return address
+
+一个地址用于从Procedure返回到父程序(caller)，存储在x1。在RISC-V中使用*jalr* 返回到caller：
+
+```apl
+jalr x0, 0(x1) // just branch to instruction address in x1
+```
+
+(有点奇怪，但是似乎这条指令到存储在x1地址中取出了指令，因为有0(x1) )
+
+RISC-V包含一个**Program Counter**(程序计数器)用于存储当前执行的指令的地址（虽然更应该叫*instruction address register*，但书上这么说），由于指令是32bits，所以需要4字节，那么相邻的下一条指令的地址则是PC+4，在跳转至Procedure前，jal将PC+4写入x1，以此设置返回地址。
+
+## 使用更多的寄存器（using more registers）
+
+当返回父程序指令地址时，父程序所使用的寄存器必须恢复在调用Procedure之前存储的数据（不能被Procedure覆盖），由于寄存器数量只有32个，所以只能将数据缓存到内存中。
+
+用于实现这样的思想的数据结构是栈（**stack**）。
+
+## Stack(栈)
+
+stack是一种最后进第一个出的队列（last in first out），stack存储在内存之中，其中存储寄存器中的数据，stack需要一个指针指向stack中最新分配的内存。stack pointer在RISC-V中是x2，用于存储栈顶的地址(stack top)。每存储或恢复（删除）一个寄存器的数据，stack都需要调整一个doubleword大小的内存，因为每一个寄存器都是64bits的。将数据存储到stack叫作**push**，从stack移除数据叫作**pop**。
+
+在RISC-V中，stacks grow from higher addresses to lower addresses，也就是说，每存储一个寄存器的数据，stack pointer的地址就减少8，反之亦然。
+
+## 编译一个Leaf Procedure (不调用其他函数的函数)
+
+```c
+long long int leaf_example(long long int g,long long int h
+                           , long long int i,long long int j)
+{
+    long long int f;
+    f=(g+h)-(i+j);
+    return f;
+}
+```
+
+
 
 ## Nested Procedures
 
